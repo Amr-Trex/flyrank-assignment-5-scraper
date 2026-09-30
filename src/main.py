@@ -1,15 +1,32 @@
+import soupsieve
 from pathlib import Path
-import requests
+import json
 import time
-from bs4 import BeautifulSoup
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 
+import requests
+from bs4 import BeautifulSoup
+
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
-USER_AGENT = "FlyRankInternship-A9/1.0 (+https://github.com/Amr-Trex/flyrank-assignment#5-scraper)"
-DELAY_SECONDS = 0.7
+USER_AGENT = "FlyRankInternship-A9/1.0 (+https://github.com/YOUR_USERNAME/flyrank-scraper)"
+DELAY_SECONDS = 0.1
 
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
+
+# this time getting iso function is for getting the current time from the system as scraper works
+def now_iso():
+    return datetime.now(
+        timezone.utc
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+# this one below is to get the time of the file that was created using path
+def file_iso(path):
+    return datetime.fromtimestamp(
+        path.stat().st_mtime,
+        tz=timezone.utc
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def cache_file(url):
@@ -31,7 +48,7 @@ def fetch(url):
     if path.exists():
         html = path.read_text(encoding="utf-8")
         print(f"CACHE HIT {url} size={len(html)}")
-        return html
+        return html, file_iso(path)
 
     response = requests.get(
         url,
@@ -49,7 +66,7 @@ def fetch(url):
 
     time.sleep(DELAY_SECONDS)
 
-    return html
+    return html, now_iso()
 
 
 def discover_books():
@@ -58,7 +75,7 @@ def discover_books():
     pages = 0
 
     while url and pages < 3:
-        html = fetch(url)
+        html, _ = fetch(url)   # time regarding when the pages were fetched is not necessary so it is discarded here
         soup = BeautifulSoup(html, "html.parser")
 
         for link in soup.select("article.product_pod h3 a"):
@@ -86,11 +103,67 @@ def discover_books():
     return books, pages
 
 
+def clean_text(element):
+    if element is None:
+        return None
+
+    text = " ".join(element.get_text().split())
+
+    if text == "":
+        return None
+
+    return text
+
+
+def rating_value(soup):
+    rating_element = soup.select_one("p.star-rating")
+
+    if rating_element is None:
+        return None
+
+    classes = rating_element.get("class", [])
+
+    for class_name in classes:
+        if class_name != "star-rating":
+            return class_name
+
+    return None
+
+
+def parse_book(html, product_url, source_page, fetched_at):
+    soup = BeautifulSoup(html, "html.parser")
+
+    record = {
+        "title": clean_text(soup.select_one("h1")),
+        "product_url": product_url,
+        "price_text": clean_text(soup.select_one("p.price_color")),
+        "availability_text": clean_text(soup.select_one("p.instock.availability")),
+        "rating_text": rating_value(soup),
+        "description": clean_text(soup.select_one("#content_inner > article > p")),
+        "source_page": source_page,
+        "fetched_at": fetched_at,
+    }
+
+    required_fields = ["title", "price_text", "availability_text", "rating_text"]
+
+    for field in required_fields:
+        if record[field] is None:
+            raise ValueError(f"Missing field: {field}")
+
+    return record
+
+
 if __name__ == "__main__":
     books, pages = discover_books()
+    records = []
 
-    print(
-        f"catalogue_pages={pages} "
-        f"discovered books={len(books)} "
-        f"unique_urls={len(books)}"
-    )
+    for book_url, source_page in books.items():
+        html, fetched_at = fetch(book_url)
+        record = parse_book(html, book_url, source_page, fetched_at)
+        records.append(record)
+
+    if records:
+        print("Sample raw record:")
+        print(json.dumps(records[0], indent=2))
+
+    print(f"detail_pages={len(records)}")
