@@ -63,7 +63,7 @@ python src/main.py
 
 ## Politeness Rules Followed
 
-- **User-Agent**: `FlyRankInternship-A9/1.0 (+https://github.com/Amr-Trex/flyrank-assignment#5-scraper)` to identify the bot properly.
+- **User-Agent**: `FlyRankInternship-A9/1.0 (+https://github.com/Amr-Trex/flyrank-assignment-5-scraper)` to identify the bot properly.
 - **Delay**: 0.1 seconds delay between requests to not overwhelm the server.
 - **Timeout**: 10 seconds timeout to not hang the scraper on slow connections.
 - **Cache**: Successful responses are cached locally to avoid re-fetching pages during subsequent runs.
