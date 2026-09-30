@@ -1,9 +1,13 @@
+from logging import exception
+from typing_extensions import Optional
+from pydantic import BaseModel
 import soupsieve
 from pathlib import Path
 import json
 import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin
+import re
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,6 +18,8 @@ DELAY_SECONDS = 0.1
 
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 # this time getting iso function is for getting the current time from the system as scraper works
 def now_iso():
@@ -130,13 +136,55 @@ def rating_value(soup):
     return None
 
 
+def clean_price(price_str):
+    if price_str:
+        match = re.search(r"[\d.]+", price_str)
+        return float(match.group()) if match else None
+    else:
+        return None
+
+
+def save_json(filename, data):
+    path = OUTPUT_DIR / filename
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: str
+    price_text: str
+    price_gbp: float
+    availability_text: str
+    rating_text: str
+    description: Optional[str] = None
+    source_page: str
+    fetched_at: str
+
+def validate_record(raw_record):
+    record = BookRecord(**dict(raw_record))
+
+    if not record.product_url.startswith(("https://", "http://")):
+        raise ValueError("product_url must start with https:// or http://")
+
+    if not record.source_page.startswith(("https://", "http://")):
+        raise ValueError("source_page must start with https:// or http://")
+
+    if hasattr(record, "model_dump"):
+        return record.model_dump()
+
+    return record.dict()
+
+
 def parse_book(html, product_url, source_page, fetched_at):
     soup = BeautifulSoup(html, "html.parser")
+
+    raw_price_text = clean_text(soup.select_one("p.price_color"))
 
     record = {
         "title": clean_text(soup.select_one("h1")),
         "product_url": product_url,
-        "price_text": clean_text(soup.select_one("p.price_color")),
+        "price_text": raw_price_text,
+        "price_gbp": clean_price(raw_price_text),
         "availability_text": clean_text(soup.select_one("p.instock.availability")),
         "rating_text": rating_value(soup),
         "description": clean_text(soup.select_one("#content_inner > article > p")),
@@ -156,14 +204,34 @@ def parse_book(html, product_url, source_page, fetched_at):
 if __name__ == "__main__":
     books, pages = discover_books()
     records = []
+    errors = []
 
     for book_url, source_page in books.items():
-        html, fetched_at = fetch(book_url)
-        record = parse_book(html, book_url, source_page, fetched_at)
-        records.append(record)
+        try:
+            html, fetched_at = fetch(book_url)
+            record = parse_book(html, book_url, source_page, fetched_at)
+            records.append(validate_record(record))
+        except Exception as e:
+            print("Exception:", e)
+            errors.append({
+                "type": "record",
+                "url": book_url,
+                "reason": str(e)
+            })
+            continue
 
     if records:
         print("Sample raw record:")
         print(json.dumps(records[0], indent=2))
+
+    unique_records = {}
+
+    for record in records:
+        unique_records[record["product_url"]] = record
+
+    final_records = list(unique_records.values())
+
+    save_json("books.json", final_records)
+    save_json("errors.json", errors)
 
     print(f"detail_pages={len(records)}")
