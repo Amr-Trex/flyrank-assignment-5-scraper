@@ -1,4 +1,4 @@
-from logging import exception
+import sys
 from typing_extensions import Optional
 from pydantic import BaseModel
 import soupsieve
@@ -13,13 +13,19 @@ import requests
 from bs4 import BeautifulSoup
 
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
-USER_AGENT = "FlyRankInternship-A9/1.0 (+https://github.com/YOUR_USERNAME/flyrank-scraper)"
+USER_AGENT = "FlyRankInternship-A9/1.0 (+https://github.com/Amr-Trex/flyrank-assignment#5-scraper)"
 DELAY_SECONDS = 0.1
 
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
+STATS = {
+    "pages_fetched": 0,
+    "cache_hits": 0,
+    "failed_pages": 0,
+    "invalid_records": 0
+}
 
 # this time getting iso function is for getting the current time from the system as scraper works
 def now_iso():
@@ -52,27 +58,45 @@ def fetch(url):
     path = cache_file(url)
 
     if path.exists():
+        STATS["cache_hits"] += 1
         html = path.read_text(encoding="utf-8")
         print(f"CACHE HIT {url} size={len(html)}")
         return html, file_iso(path)
 
-    response = requests.get(
-        url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=10
-    )
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=10
+            )
+        except requests.exceptions.RequestException as e:
+            if attempt == 0:
+                print(f"RETRY {url} (network timeout/error)...")
+                time.sleep(1)
+                continue
+            raise Exception(f"Network error: {e}")
 
-    if response.status_code != 200:
-        raise Exception(f"Bad status code: {response.status_code}")
+        if response.status_code == 200:
+            STATS["pages_fetched"] += 1
+            html = response.text
+            path.write_text(html, encoding="utf-8")
+            print(f"FETCH {url} status={response.status_code} size={len(html)}")
+            time.sleep(DELAY_SECONDS)
+            return html, now_iso()
 
-    html = response.text
-    path.write_text(html, encoding="utf-8")
+        elif response.status_code in [404, 403]:
+            raise Exception(f"Bad status code: {response.status_code}")
 
-    print(f"FETCH {url} status={response.status_code} size={len(html)}")
-
-    time.sleep(DELAY_SECONDS)
-
-    return html, now_iso()
+        elif 500 <= response.status_code < 600:
+            if attempt == 0:
+                print(f"RETRY {url} (server error {response.status_code})...")
+                time.sleep(1)
+                continue
+            raise Exception(f"Server error: {response.status_code}")
+            
+        else:
+            raise Exception(f"Bad status code: {response.status_code}")
 
 
 def discover_books():
@@ -202,7 +226,16 @@ def parse_book(html, product_url, source_page, fetched_at):
 
 
 if __name__ == "__main__":
+    start_time = time.time()
+    started_at = now_iso()
+    
     books, pages = discover_books()
+    
+    # # TEST: injecting a fake broken URL to see if we pass the --test-broken flag
+    # fake_url = "https://books.toscrape.com/catalogue/this-book-does-not-exist_9999/index.html"
+    # books[fake_url] = START_URL
+    # print(">>> Injected fake URL for testing...")
+
     records = []
     errors = []
 
@@ -213,8 +246,15 @@ if __name__ == "__main__":
             records.append(validate_record(record))
         except Exception as e:
             print("Exception:", e)
+
+            error_type = "fetch" if "status code" in str(e) or "Network error" in str(e) else "record"
+            if error_type == "fetch":
+                STATS["failed_pages"] += 1
+            else:
+                STATS["invalid_records"] += 1
+                
             errors.append({
-                "type": "record",
+                "type": error_type,
                 "url": book_url,
                 "reason": str(e)
             })
@@ -225,7 +265,6 @@ if __name__ == "__main__":
         print(json.dumps(records[0], indent=2))
 
     unique_records = {}
-
     for record in records:
         unique_records[record["product_url"]] = record
 
@@ -233,5 +272,20 @@ if __name__ == "__main__":
 
     save_json("books.json", final_records)
     save_json("errors.json", errors)
+    
+    # STAGE 5: Write the run report
+    report = {
+        "started_at": started_at,
+        "duration_seconds": round(time.time() - start_time, 2),
+        "catalogue_pages": pages,
+        "discovered_urls": len(books),
+        "pages_fetched": STATS["pages_fetched"],
+        "cache_hits": STATS["cache_hits"],
+        "valid_records": len(final_records),
+        "invalid_records": STATS["invalid_records"],
+        "failed_pages": STATS["failed_pages"],
+    }
+    save_json("run-report.json", report)
 
-    print(f"detail_pages={len(records)}")
+    print(f"detail_pages={len(final_records)}")
+    print(f"failed_pages={STATS['failed_pages']}")

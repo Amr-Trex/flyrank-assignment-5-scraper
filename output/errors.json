@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "type": "fetch",
+    "url": "https://books.toscrape.com/catalogue/this-book-does-not-exist_9999/index.html",
+    "reason": "Bad status code: 404"
+  }
+]
